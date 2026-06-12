@@ -15,7 +15,8 @@ Real-time SCF Class
 '''
 
 class RT_SCF:
-    def __init__(self, scf, timestep, max_time, filename=None, prop=None, frequency=1, orth=None, chkfile=None, verbose=3):
+    def __init__(self, scf, timestep, max_time, filename=None, prop=None, frequency=1, orth=None, chkfile=None, verbose=3,
+                 save_prefix=None, cube_nx=80, cube_ny=80, cube_nz=80, save_outputs=None):
 
         self.timestep = timestep
         self.frequency = frequency
@@ -25,6 +26,25 @@ class RT_SCF:
         self.occ = self._scf.get_occ()
         
         self.verbose = verbose
+        # ==== start of new additions
+        self.save_prefix = save_prefix
+        self.cube_nx = cube_nx
+        self.cube_ny = cube_ny
+        self.cube_nz = cube_nz
+        self.save_outputs = {} if save_outputs is None else dict(save_outputs)
+        self.save_cube_density = bool(self.save_outputs.get('cube_density', False))
+        self.save_density_matrix = bool(self.save_outputs.get('density_matrix', False))
+        self.save_fock_matrix = bool(self.save_outputs.get('fock_matrix', False))
+        self.save_observables_to_npy = bool(self.save_outputs.get('observables', False))
+        self.save_matrix_order = bool(self.save_outputs.get('matrix_order', False))
+        self.cube_density_indices = None
+        self._sz = 0.0
+        self._sz2 = 0.0
+        self._spin_polarization = 0.0
+        self._save_metadata_written = False
+        self._matrix_order_saved = False
+        self._cube_metadata_saved = False
+        # ==== end of new additions
         self._potential = []
         self.fragments = []
 

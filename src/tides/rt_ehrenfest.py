@@ -14,9 +14,11 @@ Real-time SCF + Ehrenfest
 '''
 
 class RT_Ehrenfest(RT_SCF):
-    def __init__(self, scf, timestep, max_time, filename=None, prop=None, frequency=1, chkfile=None, verbose=3, Ne_step=10, N_step=10, get_mo_coeff_print=None):
+    def __init__(self, scf, timestep, max_time, filename=None, prop=None, frequency=1, chkfile=None, verbose=3, Ne_step=10, N_step=10, get_mo_coeff_print=None,
+                 save_prefix=None, cube_nx=80, cube_ny=80, cube_nz=80, save_outputs=None):
 
-        super().__init__(scf, timestep, max_time, filename, prop, frequency, None, chkfile, verbose)
+        super().__init__(scf, timestep, max_time, filename, prop, frequency, None, chkfile, verbose,
+                         save_prefix=save_prefix, cube_nx=cube_nx, cube_ny=cube_ny, cube_nz=cube_nz, save_outputs=save_outputs)
 
         self.Ne_step = Ne_step
         self.N_step = N_step

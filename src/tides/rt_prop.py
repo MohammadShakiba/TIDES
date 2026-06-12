@@ -11,6 +11,9 @@ Real-time Propagation
 def propagate(rt_scf, mo_coeff_print):
     print_info(rt_scf, mo_coeff_print)
     rt_observables._check_observables(rt_scf)
+    # ==== start of new additions
+    rt_output.prepare_saved_outputs(rt_scf)
+    # ==== end of new additions
 
     rt_scf._integrate_function = rt_integrators.get_integrator(rt_scf)
     rt_scf._fock_orth = rt_scf.get_fock_orth(rt_scf.den_ao)

@@ -4,6 +4,7 @@ from tides.basis_utils import _mask_fragment_basis
 from tides.hirshfeld import hirshfeld_partition, get_weights
 from tides.rt_utils import _update_mo_coeff_print
 from pyscf import lib
+from pyscf.dft import numint
 from pyscf.lib import logger
 from pyscf.tools import cubegen
 from datetime import datetime
@@ -12,6 +13,54 @@ import os
 '''
 Real-time Observable Functions
 '''
+
+# ==== start of new additions
+def _cube_output_stem(rt_scf, suffix):
+    output_dir, file_stem = rt_output._output_prefix_info(rt_scf)
+    if output_dir is None:
+        return None, None
+
+    step = int(np.rint(rt_scf.current_time / rt_scf.timestep))
+    return output_dir, f'{file_stem}_{suffix}_step_{step}'
+
+
+def _build_cube(rt_scf):
+    origin = getattr(rt_scf, '_cube_origin', None)
+    extent = getattr(rt_scf, '_cube_extent', None)
+    return cubegen.Cube(rt_scf._scf.mol, nx=rt_scf.cube_nx, ny=rt_scf.cube_ny, nz=rt_scf.cube_nz, origin=origin, extent=extent)
+
+
+def _density_to_grid(rt_scf, den_ao, cube):
+    from pyscf.pbc.gto import Cell
+
+    gto_name = 'GTOval'
+    if isinstance(rt_scf._scf.mol, Cell):
+        gto_name = 'PBC' + gto_name
+
+    coords = cube.get_coords()
+    ngrids = cube.get_ngrids()
+    blksize = min(8000, ngrids)
+    rho = np.empty(ngrids)
+
+    for ip0, ip1 in lib.prange(0, ngrids, blksize):
+        ao = rt_scf._scf.mol.eval_gto(gto_name, coords[ip0:ip1])
+        rho[ip0:ip1] = np.real(numint.eval_rho(rt_scf._scf.mol, ao, den_ao))
+
+    return rho.reshape(cube.nx, cube.ny, cube.nz)
+
+
+def _save_cube_outputs(rt_scf, suffix, density_array, cube_name):
+    output_dir, cube_stem = _cube_output_stem(rt_scf, suffix)
+    if output_dir is None:
+        return
+
+    cube_path = os.path.join(output_dir, f'{cube_stem}.cube')
+    cube = _build_cube(rt_scf)
+    rt_scf._cube_origin = np.asarray(cube.boxorig)
+    rt_scf._cube_extent = np.asarray(np.diag(cube.box))
+    cube.write(density_array, cube_path, comment='Electron density in real space (e/Bohr^3)')
+    np.save(os.path.join(output_dir, f'{cube_stem}.npy'), density_array)
+# ==== end of new additions
 
 def _init_observables(rt_scf):
     rt_scf.observables = {
@@ -31,6 +80,7 @@ def _init_observables(rt_scf):
         'nuclei'               : False,
         'cube_density'         : False,
         'spin_square'          : False,
+        'spin_observables'     : False,
         'mo_coeff'             : False,
         'den_ao'               : False,
         'fock_ao'              : False,
@@ -53,6 +103,7 @@ def _init_observables(rt_scf):
         'nuclei'               : [get_nuclei, rt_output._print_nuclei],
         'cube_density'         : [get_cube_density, lambda *args: None],
         'spin_square'          : [get_spin_square, rt_output._print_spin_square],
+        'spin_observables'     : [get_spin_observables, rt_output._print_spin_observables],
         'mo_coeff'             : [lambda *args: None, rt_output._print_mo_coeff],
         'den_ao'               : [lambda *args: None, rt_output._print_den_ao],
         'fock_ao'              : [lambda *args: None, rt_output._print_fock_ao],
@@ -62,7 +113,8 @@ def _init_observables(rt_scf):
 
 def _check_observables(rt_scf):
     if rt_scf.observables['mag'] | rt_scf.observables['hirsh_atom_mag']:
-        assert rt_scf._scf.istype('GHF') | rt_scf._scf.istype('GKS')
+        if rt_scf.nmat == 1:
+            assert rt_scf._scf.istype('GHF') | rt_scf._scf.istype('GKS')
 
     # Get atomic weights if using Hirshfeld Scheme
     if (rt_scf.observables['hirsh_atom_mag'] | rt_scf.observables['hirsh_mag'] |
@@ -194,12 +246,18 @@ def get_quadrupole(rt_scf, den_ao):
     rt_scf._quadrupole = rt_scf._scf.quad_moment(mol=rt_scf._scf.mol, dm=rt_scf.den_ao,unit='A.U.', verbose=1)
 
 def get_mag(rt_scf, den_ao):
-    Nsp = int(np.shape(rt_scf.ovlp)[0] / 2)
+    if rt_scf.nmat == 2:
+        magx = 0.0
+        magy = 0.0
+        magz = np.trace(np.matmul((den_ao[0] - den_ao[1]), rt_scf.ovlp))
+        rt_scf._mag = [magx, magy, magz]
+    else:
+        Nsp = int(np.shape(rt_scf.ovlp)[0] / 2)
 
-    magx = np.sum((den_ao[:Nsp, Nsp:] + den_ao[Nsp:, :Nsp]) * rt_scf.ovlp[:Nsp,:Nsp])
-    magy = 1j * np.sum((den_ao[:Nsp, Nsp:] - den_ao[Nsp:, :Nsp]) * rt_scf.ovlp[:Nsp,:Nsp])
-    magz = np.sum((den_ao[:Nsp, :Nsp] - den_ao[Nsp:, Nsp:]) * rt_scf.ovlp[:Nsp,:Nsp])
-    rt_scf._mag = [magx, magy, magz]
+        magx = np.sum((den_ao[:Nsp, Nsp:] + den_ao[Nsp:, :Nsp]) * rt_scf.ovlp[:Nsp,:Nsp])
+        magy = 1j * np.sum((den_ao[:Nsp, Nsp:] - den_ao[Nsp:, :Nsp]) * rt_scf.ovlp[:Nsp,:Nsp])
+        magz = np.sum((den_ao[:Nsp, :Nsp] - den_ao[Nsp:, Nsp:]) * rt_scf.ovlp[:Nsp,:Nsp])
+        rt_scf._mag = [magx, magy, magz]
 
 def get_hirshfeld_mag(rt_scf, den_ao):
     rho_aa, rho_ab, rho_ba, rho_bb = hirshfeld_partition(rt_scf._scf, den_ao, rt_scf.grids, rt_scf.atom_weights)
@@ -241,12 +299,25 @@ def get_cube_density(rt_scf, den_ao):
     Will create Gaussian cube file for molecule electron density
     for every propagation time given in rt_scf.cube_density_indices.
     '''
-    if np.rint(rt_scf.current_time/rt_scf.timestep) in np.rint(np.array(rt_scf.cube_density_indices)/rt_scf.timestep):
-        if hasattr(rt_scf, 'cube_filename'):
-            cube_name = f'{rt_scf.cube_filename}{rt_scf.current_time}.cube'
+    cube_indices = getattr(rt_scf, 'cube_density_indices', None)
+    current_step = np.rint(rt_scf.current_time / rt_scf.timestep)
+
+    if cube_indices is None:
+        should_save_cube = True
+    else:
+        should_save_cube = current_step in np.rint(np.array(cube_indices) / rt_scf.timestep)
+
+    if should_save_cube and getattr(rt_scf, 'save_cube_density', False):
+        rt_output._save_grid_metadata(rt_scf)
+
+        if rt_scf.nmat == 2:
+            rho_alpha = _density_to_grid(rt_scf, den_ao[0], _build_cube(rt_scf))
+            rho_beta = _density_to_grid(rt_scf, den_ao[1], _build_cube(rt_scf))
+            _save_cube_outputs(rt_scf, 'density_alpha', rho_alpha, None)
+            _save_cube_outputs(rt_scf, 'density_beta', rho_beta, None)
         else:
-            cube_name = f'{rt_scf.current_time}.cube'
-        cubegen.density(rt_scf._scf.mol, cube_name, den_ao)
+            rho_total = _density_to_grid(rt_scf, den_ao, _build_cube(rt_scf))
+            _save_cube_outputs(rt_scf, 'density_total', rho_total, None)
 
 def get_spin_square(rt_scf, den_ao):
     if rt_scf._scf.istype('UHF'):
@@ -256,3 +327,23 @@ def get_spin_square(rt_scf, den_ao):
         mo_coeff = rt_scf._scf.mo_coeff[:,rt_scf.occ>0]
 
     rt_scf._s2, rt_scf._2s_p1 = rt_scf._scf.spin_square(mo_coeff, s=rt_scf.ovlp)
+
+
+def get_spin_observables(rt_scf, den_ao):
+    get_spin_square(rt_scf, den_ao)
+
+    if rt_scf.nmat == 2:
+        n_alpha = np.real(np.trace(np.matmul(den_ao[0], rt_scf.ovlp)))
+        n_beta = np.real(np.trace(np.matmul(den_ao[1], rt_scf.ovlp)))
+        sz = 0.5 * (n_alpha - n_beta)
+        n_total = n_alpha + n_beta
+        spin_polarization = 0.0 if np.isclose(n_total, 0.0) else (n_alpha - n_beta) / n_total
+    else:
+        # Generalized spinor case falls back to the total magnetization-derived count.
+        sz = 0.5 * np.real(rt_scf._mag[2]) if hasattr(rt_scf, '_mag') else 0.0
+        n_total = np.real(np.trace(np.matmul(den_ao, rt_scf.ovlp)))
+        spin_polarization = 0.0 if np.isclose(n_total, 0.0) else (2.0 * sz) / n_total
+
+    rt_scf._sz = sz
+    rt_scf._sz2 = sz ** 2
+    rt_scf._spin_polarization = spin_polarization
